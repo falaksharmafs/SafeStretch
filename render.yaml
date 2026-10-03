@@ -1,0 +1,29 @@
+# Render blueprint (template - adjust names/plans). Database: use a managed Postgres WITH PostGIS + pgRouting
+# (e.g. Supabase) or your own VPS running docker-compose. Set DATABASE_URL in the dashboard as a secret.
+services:
+  - type: web
+    name: roadrisk-api
+    runtime: docker
+    dockerfilePath: ./Dockerfile.api
+    healthCheckPath: /health
+    envVars:
+      - {key: DATABASE_URL, sync: false}
+      - {key: API_KEYS, sync: false}
+      - {key: ADMIN_KEY, sync: false}
+      - {key: HASH_SALT, generateValue: true}
+      - {key: TIMEZONE, value: Asia/Kolkata}
+  - type: web
+    name: roadrisk-dashboard
+    runtime: docker
+    dockerfilePath: ./Dockerfile.worker
+    dockerCommand: streamlit run app/streamlit_app.py --server.port 10000 --server.address 0.0.0.0
+    envVars:
+      - {key: DATABASE_URL, sync: false}
+  - type: worker
+    name: roadrisk-scheduler
+    runtime: docker
+    dockerfilePath: ./Dockerfile.worker
+    envVars:
+      - {key: DATABASE_URL, sync: false}
+      - {key: TOMTOM_KEY, sync: false}
+      - {key: TIMEZONE, value: Asia/Kolkata}

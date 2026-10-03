@@ -1,0 +1,26 @@
+name: Scheduled retrain
+on:
+  schedule: [{cron: "0 21 1 * *"}]     # 1st of each month, 21:00 UTC
+  workflow_dispatch:
+jobs:
+  retrain:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      PLACE_NAME: ${{ secrets.PLACE_NAME }}
+      TIMEZONE: Asia/Kolkata
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11", cache: pip}
+      - run: pip install -r requirements.txt
+      - run: python -m src.validation          # fails the job (and stops retrain) on data-quality errors
+      - run: |
+          python -m src.models.hotspots
+          python -m src.models.empirical_bayes
+          python -m src.models.multipliers
+          python -m src.models.train
+          python -m src.live.refresh
+      - uses: actions/upload-artifact@v4
+        with: {name: metrics, path: reports/metrics.json}

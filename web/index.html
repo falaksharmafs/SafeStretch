@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Road Risk Map</title>
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+<style>
+  html,body{margin:0;height:100%;font:14px system-ui,sans-serif}
+  #map{position:absolute;inset:0}
+  #panel{position:absolute;top:10px;left:10px;z-index:2;background:#fff;padding:12px;border-radius:8px;
+         box-shadow:0 2px 8px #0003;width:290px;max-height:90%;overflow:auto}
+  #panel h3{margin:0 0 6px} button,select,input{margin:3px 0;width:100%;padding:6px;box-sizing:border-box}
+  .row{display:flex;gap:6px}.row button{flex:1}
+  #out{font-size:13px;margin-top:6px;white-space:pre-wrap}
+  small{color:#555}
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="panel">
+  <h3>Road Risk</h3>
+  <small>Click the map to set A, then B. Click again to restart.</small>
+  <input id="key" placeholder="API key (if required)" type="password">
+  <input id="lam" type="range" min="0" max="10" step="0.5" value="3">
+  <small>Safety weight: <span id="lamv">3</span> (0 = shortest)</small>
+  <div class="row"><button id="go">Compare routes</button><button id="clear">Clear</button></div>
+  <button id="info">Risk at last click</button>
+  <select id="kind"><option>hazard</option><option>accident</option><option>pothole</option>
+    <option>poor_lighting</option><option>waterlogging</option></select>
+  <button id="report">Report at last click</button>
+  <div id="out"></div>
+  <small>Decision-support only. Scores are estimates from reported accidents, not guarantees.</small>
+</div>
+<script>
+// ---- configuration ----
+const API = location.origin;                       // API serves this page at /app
+const TILES = (window.TILES_URL || "http://localhost:7800") + "/public.risk_tiles/{z}/{x}/{y}.pbf";
+
+const $ = id => document.getElementById(id);
+const out = t => { $("out").textContent = t; };
+const hdr = () => ({"X-API-Key": $("key").value});
+let pts = [], markers = [], last = null;
+
+const map = new maplibregl.Map({
+  container: "map", center: [75.86, 22.72], zoom: 11,
+  style: {version: 8, sources: {base: {type: "raster", tileSize: 256, attribution: "© OpenStreetMap © CARTO",
+      tiles: ["https://basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png"]}},
+    layers: [{id: "base", type: "raster", source: "base"}]}
+});
+map.addControl(new maplibregl.NavigationControl());
+
+map.on("load", () => {
+  map.addSource("risk", {type: "vector", tiles: [TILES], maxzoom: 14});
+  map.addLayer({id: "risk", type: "line", source: "risk", "source-layer": "public.risk_tiles",
+    paint: {"line-width": ["interpolate", ["linear"], ["zoom"], 10, 1, 15, 5],
+            "line-color": ["interpolate", ["linear"], ["get", "risk_pct"], 0.5, "#fee08b", 0.8, "#fdae61", 0.95, "#d73027"]}});
+  for (const id of ["fast", "safe"]) {
+    map.addSource(id, {type: "geojson", data: {type: "FeatureCollection", features: []}});
+    map.addLayer({id, type: "line", source: id,
+      paint: {"line-width": 5, "line-color": id === "fast" ? "#1f78b4" : "#1a9850", "line-opacity": 0.9}});
+  }
+});
+
+map.on("click", e => {
+  last = e.lngLat;
+  if (pts.length >= 2) clearAll();
+  pts.push(last);
+  markers.push(new maplibregl.Marker({color: pts.length === 1 ? "#1f78b4" : "#444"}).setLngLat(last).addTo(map));
+});
+
+function clearAll() {
+  pts = []; markers.forEach(m => m.remove()); markers = [];
+  for (const id of ["fast", "safe"]) map.getSource(id).setData({type: "FeatureCollection", features: []});
+  out("");
+}
+
+async function call(path, opts = {}) {
+  const r = await fetch(API + path, {...opts, headers: {...hdr(), "Content-Type": "application/json"}});
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.detail || r.statusText);
+  return j;
+}
+
+$("lam").oninput = () => { $("lamv").textContent = $("lam").value; };
+$("clear").onclick = clearAll;
+
+$("go").onclick = async () => {
+  if (pts.length < 2) return out("Click two points first.");
+  try {
+    const [a, b] = pts;
+    const j = await call(`/route?from_lat=${a.lat}&from_lon=${a.lng}&to_lat=${b.lat}&to_lon=${b.lng}&lam=${$("lam").value}`);
+    map.getSource("fast").setData(j.fastest);
+    map.getSource("safe").setData(j.safest);
+    const c = j.comparison, f = j.fastest.properties, s = j.safest.properties;
+    out(c.same_route ? "Fastest and safest routes are the same here."
+      : `Blue = fastest (${f.length_m} m, ${f.high_risk_segments} high-risk segments)\n` +
+        `Green = safest (${s.length_m} m, ${s.high_risk_segments} high-risk segments)\n` +
+        `Safest is ${c.extra_distance_pct}% longer, mean risk ${c.risk_reduction_pct}% lower.`);
+  } catch (e) { out("Error: " + e.message); }
+};
+
+$("info").onclick = async () => {
+  if (!last) return out("Click the map first.");
+  try {
+    const j = await call(`/risk?lat=${last.lat}&lon=${last.lng}`);
+    out(`${j.segment.name || "Unnamed road"} (${j.segment.road_type})\nRisk level: ${j.base.level}, rank #${j.base.risk_rank}\n` +
+        `Live index x${(j.live.time_multiplier * j.live.rain_multiplier).toFixed(2)} (hour ${j.live.hour}, rain: ${j.live.rain})\n` +
+        (j.reasons.length ? "Why: " + j.reasons.join("; ") : ""));
+  } catch (e) { out("Error: " + e.message); }
+};
+
+$("report").onclick = async () => {
+  if (!last) return out("Click the map first.");
+  try {
+    const j = await call("/reports", {method: "POST", body: JSON.stringify({kind: $("kind").value, lat: last.lat, lon: last.lng})});
+    out(j.message);
+  } catch (e) { out("Error: " + e.message); }
+};
+</script>
+</body>
+</html>

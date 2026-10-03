@@ -1,0 +1,11 @@
+# SafeStretch dashboard theme (dark navy by default). Switch to Light any time: top-right menu > Settings > Theme.
+[theme]
+base = "dark"
+primaryColor = "#3B9EFF"
+backgroundColor = "#0B1220"
+secondaryBackgroundColor = "#111A2B"
+textColor = "#E6EAF0"
+font = "sans serif"
+
+[browser]
+gatherUsageStats = false
